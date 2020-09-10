@@ -1,0 +1,511 @@
+---
+title: "STAT 331 Final Project, Winter 2020"
+author: 
+- Hanna Nguyen
+- Nathaniel Shek Wing Cheng
+output: 
+ pdf_document:
+   number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+fhs <- read.csv("fhs.csv")
+```
+
+# Summary
+
+With this report, the goal is to try and explore the relation between the risk score for coronary heart disease and some explanatory variables. The data being analysed comes from 2306 individuals that participated in the Framingham Heart Study.
+
+We created two candidate model, one using the automated model selection method and the other using a basic linear model with consideration of interpretability. We concluded that the former model is better, and some important factors affecting the heart disease risk score are the age, gender, number of cigarretes one smokes per day, existence of diabetes, their heart rate and previous special medical conditions.
+
+# Descriptive Statistics
+
+Summary Statistics
+```{r summary,echo=FALSE}
+summary(fhs)
+```
+
+\newpage
+
+Pair Plots 
+```{r pairs, label = "1", echo=FALSE, fig.align = "center", out.width = "\\textwidth", fig.pos = "!h", fig.cap="\\label{fig:1} Pair plots for all continuous variables"}
+pairs(~ (log(chdrisk) - log(1-chdrisk)) + age + totchol + sysbp + diabp + 
+        cigpday + bmi + heartrte + glucose + hdlc + ldlc, data = fhs)
+```
+
+
+Variance Inflation Factors (VIF)
+```{r VIF, echo = FALSE}
+X0 <- model.matrix(lm(log(chdrisk) - log(1 - chdrisk)~ . - 1 - sex - 
+                       cursmoke - diabetes - bpmeds - prevmi - prevstrk - prevhyp, 
+                     data = fhs)) # model matrix without catergorial data
+C <- cor(X0) # correlation matrix
+vif <- diag(solve(C)) # diagonal lines of the model matrix 
+vif
+```
+
+Looking at the variance inflation factors, it is clear that serum total cholesterol and low density lipoprotein cholesterol are cause for concern since their VIF results are so high. So looking at the pair plots, specifically for these two covariates, there is a linear relationship between them, which is true in real life. This will be taken into consideration when trying out different models for the dataset.
+
+
+# Candidate Models
+
+## First Candidate Model
+For the first candidate model, we will consider some automatic model selection techniques. The inputs given will be one model with just the intercept, and one model every explanatory variable and all of their interactions. We will then consider forward selection, backwards selection and stepwise selection and pick one of these three.
+
+```{r first_candidate, include = FALSE}
+M0 <- lm(log(chdrisk) - log(1 - chdrisk) ~ 1, data = fhs) #intercept only
+
+Mmax <- lm(log(chdrisk) - log(1 - chdrisk) ~ (.)^2, data = fhs) #all main effects and interactions
+beta.max <- coef(Mmax)
+length(beta.max) # number of coefficients
+names(beta.max)[is.na(beta.max)] # coefficients that couldn't be estimated
+table(fhs[c("cursmoke", "cigpday")])
+
+Mmax <- lm(log(chdrisk) - log(1 - chdrisk) ~ (.)^2 - cursmoke:cigpday - bpmeds:prevhyp, data = fhs)
+anyNA(coef(Mmax)) # make sure there are no coefficients with NA in the model
+
+# starting point model: main effects only
+Mstart <- lm(log(chdrisk) - log(1 - chdrisk) ~ ., data = fhs) 
+
+# forward
+system.time({
+  Mfwd <- step(object = M0, # base model
+               scope = list(lower = M0, upper = Mmax), # smallest and largest model
+               direction = "forward",
+               trace = FALSE) # trace prints out information
+})
+
+# backward
+system.time({
+  Mback <- step(object = Mmax, # base model
+                scope = list(lower = M0, upper = Mmax),
+                direction = "backward", trace = FALSE)
+})
+
+# stepwise (both directions)
+system.time({
+  Mstep <- step(object = Mstart,
+                scope = list(lower = M0, upper = Mmax),
+                direction = "both", trace = FALSE)
+})
+```
+
+After constructing the three models, we will look at their anova calls to decide which candidate model we will choose as our first.
+
+F-statistics:
+- Forward Selection and Stepwise Selection: 9.91e-12
+- Backward Selection and Forward Selection: 0.02735
+- Stepwise Selection and Backward Selection: 3.089e-11
+
+```{r first_candidate_anova, include=FALSE}
+anova(Mfwd, Mstep)
+anova(Mstep, Mback)
+anova(Mback, Mfwd)
+```
+
+Looking at the F-statistics from the anova call, the stepwise selection is the model that will be chosen. And since the benefit from the stepwise to backwards selection is minimal, there is no need to choose the backwards selection over the stepwise selection.
+
+## Second Candidate Model
+
+With this second candidate model, priority will be given to interpritability of the model. To start, we will with a basic model with all the explanatory variables. Then we will compare that model with one that removes serum total cholesterol and low density lipoprotein cholesterol which were the problematic VIFs that was found earlier.
+
+```{r second_candidate, include=FALSE}
+M1 <- lm(log(chdrisk) - log(1 - chdrisk) ~ ., data = fhs) #basic linear model
+M2 <- lm(log(chdrisk) - log(1 - chdrisk) ~ . - totchol - ldlc, data = fhs)
+```
+
+```{r second_candidate_anova, include=FALSE}
+anova(M2, M1)
+```
+
+Result of anova call: F-statistics: 2.2e-16
+
+The anova test is used as a goodness of fit diagnostic between the two models. What the code is doing is testing the null hypothesis of setting all the covariates in the basic model that are not in the modified model to zero. And then what we are essentially doing is performing an F-test to identify if M2 is a model that should be chosen. As we can see from the output of anova, the simple modification of the basic linear model did much better and so for the second candidate model, we will choose the modified basic linear model that does not include serum total cholesterol and low density lipoprotein cholesterol. Since the p-value that is given from the test is so low, we will not reject our null hypothesis, and so the modified basic linear model is the one that will do better.
+
+# Model Diagnostics
+
+Now that we have selected two candidate models, we will proceed to check whether they violates any assumptions of the linear model and provide an in-depth analysis regarding this.
+
+## Comparing the residual plots
+
+We will compare the two plots that consider residuals as a function of predicted values for risk score of coronary heart disease. But first, we should choose the type of residuals whose histogram look the most normal to explore the linearity of each model.
+
+For the first candidate model, we choose the studentized residuals because:
+- the plots for PRESS and DFFITS residuals do not look as normal as of studentized residuals 
+- the plot for standardized residuals looks normal, if not the same as that of studentized residuals but the units on the y-axis for studentized residuals are not the same as that of the response variable. 
+
+When plotting this type of residuals against fitted values for coronary heart disease risk score, we see that the first candidate model produces residuals close to constant-variance with a few outliers. That is the reason why the residual scale seems a bit negatively biased as shown on both the plot and the histogram. 
+\newpage
+
+```{r residuals_plots_first_model, echo=FALSE, label = "2", fig.align = "center", out.height = '200px', out.width = "\\maxwidth", fig.pos = "!h", fig.cap="\\label{fig:2} Residual plots for the first candidate model"}
+# predicted values
+y.hat <- predict(Mstep) 
+sigma.hat <- sigma(Mstep)
+
+# ordinary residuals
+res <- resid(Mstep) 
+
+# standardized residuals
+stan.res <- res/sigma.hat 
+
+# computing leverages for finding the studentized residuals
+X <- model.matrix(Mstep)
+H <- X%*%solve(crossprod(X), t(X)) # HAT matrix
+h <- hatvalues(Mstep)
+
+# studentized residuals
+stud.res <- stan.res/sqrt(1-h)
+
+# PRESS residuals
+press.res <- res/(1-h)
+
+# DFFITS residuals
+dfts.res <- dffits(Mstep)
+
+# collect all residuals
+Resid <- data.frame(stan = stan.res,
+                    stud = stud.res,
+                    press = press.res,
+                    dffits = dfts.res)
+
+hbar  <- ncol(model.matrix(Mstep))/nobs(Mstep) # 
+# standardize residuals by making them all equal at average leverage
+Resid <- within(Resid, {
+  stud <- stud.res * sqrt(1-hbar)
+  press <- press.res * (1-hbar)/sigma.hat
+  dffits <- dfts.res * (1-hbar)/sqrt(hbar)
+})
+
+clrs <- c("black", "blue", "red", "orange") # define colors
+par(mfrow = c(1,2), mar = c(4,4,.1,.1)) # plot frame
+pch = 21 # plot character
+cex = .8 # size of data point
+# plot the residuals vs. fitted value for first model
+plot(x = 0, type = "n", # empty plot to get the axis range
+     xlim = range(y.hat),
+     ylim = range(Resid), cex.lab = cex, cex.axis = cex,
+     xlab = 'Predicted CHD risk score', ylab = 'Residuals CHD risk score')
+# add dotted lines between residuals to enhance visibility
+res.y0 <- apply(Resid, 1, min)
+res.y1 <- apply(Resid, 1, max)
+segments(x0 = y.hat, y0 = res.y0, y1 = res.y1, lty = 2)
+# add points
+for(ii in 1:4) {
+  points(y.hat, Resid[,ii], pch = pch, cex = cex, bg = clrs[ii])
+}
+abline(h = 0, col = "grey60") # zero residual line
+legend("bottomleft",
+       legend = c("Standardized", "Studentized", "PRESS", "DFFITS"),
+       pch = 21, pt.cex = cex, cex = cex,
+       pt.bg = c("black", "blue", "red", "orange"),
+       title = "Residual Type:")
+
+# histogram for studentized residuals
+hist(stud.res, breaks = 50, freq = FALSE, cex.axis = cex,
+     xlab = "Residual CHD risk scores", main = "")
+curve(dnorm(x), col = "red", add = TRUE) # fit the normal curve
+```
+
+
+Similarly, we will also use studentized residuals for the second candidate model. 
+
+```{r r residuals_plots_second_model, label = "3", echo=FALSE, fig.align = "center", out.height = '200px', out.width = "\\maxwidth", fig.pos = "!h", fig.cap="\\label{fig:3} Residual plots for the second candidate model"}
+# predicted values
+y.hat1 <- predict(M2) 
+sigma.hat1 <- sigma(M2)
+
+# ordinary residuals
+res1 <- resid(M2) 
+
+# standardized residuals
+stan.res1 <- res1/sigma.hat 
+
+# computing leverages for finding the studentized residuals
+X1 <- model.matrix(M2)
+H1 <- X1%*%solve(crossprod(X1), t(X1)) # HAT matrix
+h1 <- hatvalues(M2)
+
+# studentized residuals
+stud.res1 <- stan.res1/sqrt(1-h1)
+
+# PRESS residuals
+press.res1 <- res1/(1-h1)
+
+# DFFITS residuals
+dfts.res1 <- dffits(M2)
+
+# collect all residuals
+Resid1 <- data.frame(stan = stan.res1,
+                    stud = stud.res1,
+                    press = press.res1,
+                    dffits = dfts.res1)
+
+hbar1  <- ncol(model.matrix(M2))/nobs(M2) # average leverage
+# standardize residuals by making them all equal at average leverage
+Resid1 <- within(Resid1, {
+  stud <- stud.res1 * sqrt(1-hbar1)
+  press <- press.res1 * (1-hbar1)/sigma.hat1
+  dffits <- dfts.res1 * (1-hbar1)/sqrt(hbar1)
+})
+
+par(mfrow = c(1,2), mar = c(4,4,.1,.1)) # plot frame
+pch = 21 # plot character
+cex = .8 # size of data point
+# plot the residual vs. fitted value for first model
+plot(x = 0, type = "n", # empty plot to get the axis range
+     xlim = range(y.hat1),
+     ylim = range(Resid1), cex.lab = cex, cex.axis = cex,
+     xlab = 'Predicted CHD risk score', ylab = 'Residuals CHD risk score')
+# add dotted lines between residuals to enhance visibility
+res.y01 <- apply(Resid1, 1, min)
+res.y11 <- apply(Resid1, 1, max)
+segments(x0 = y.hat1, y0 = res.y01, y1 = res.y11, lty = 2)
+# add points
+for(ii in 1:4) {
+  points(y.hat1, Resid1[,ii], pch = pch, cex = cex, bg = clrs[ii])
+}
+abline(h = 0, col = "grey60") # zero residual line
+legend("topright",
+       legend = c("Standardized", "Studentized", "PRESS", "DFFITS"),
+       pch = 21, pt.cex = cex, cex = cex,
+       pt.bg = c("black", "blue", "red", "orange"),
+       title = "Residual Type:")
+
+# histogram for studentized residuals
+hist(stud.res1, breaks = 50, freq = FALSE, cex.axis = cex,
+     xlab = "Residual Risk scores", main = "")
+curve(dnorm(x), col = "red", add = TRUE) # fit the normal curve
+```
+
+Overall, the residual distribution as shown by the histogram of the second model is more normal than the first candidate model. However, when looking at the residuals vs fitted values plot, it seems that residuals are not as close to constant-variance, and there are more outliers than the first candidate model. Thus, in terms of homoscedasticity, the first candidate model is preferred.
+
+## Leverage and influence measures
+
+Next, we will analyze any high leverage observations and highly influential measures to investigate the fit of both models on the given data.  
+
+We can see that even though there are a lot of high leverage points in both models, we will only pay attention to the points that went pass the cutoff of 0.4 leverage (since points above this cutoff is very widespread in both models) and the high influence points marked in red.
+
+```{r leverage_and_influence_measures_1, label = "4", fig.align = "center", echo = FALSE, out.height = '180px', out.width = "\\maxwidth", fig.pos = "!h", fig.cap="\\label{fig:4} Leverage vs. Cook's Distance of first model"}
+# Cook's distance vs. leverage 
+
+pch = 21 # plot character
+cex = .8 # size of data point
+
+# Cook's distance for the first model
+D <- cooks.distance(Mstep) # calculate Cook's Distance 
+infl.ind <- which.max(D) # top influence point
+lev.ind <- h > 2*hbar # leverage more than twice average 
+clrs[lev.ind] <- 'blue' # color for high leverage index
+clrs[infl.ind] <- 'red' # color for high influence index
+# plot Cook's Distance measure against leverage
+plot(h, D, xlab = 'Leverage', ylab = "Cook's Distance", 
+     pch = pch, bg = clrs, cex = cex, cex.axis = cex)
+# limit for high leverage points
+abline(v = 2*hbar, col = 'grey60', lty=2)
+# specifying high influence and leverage points
+legend("topleft", legend = c("High Leverage", "High Influence"), 
+       pch = pch, pt.bg = c("blue", "red"), cex = cex, pt.cex = cex)
+```
+
+```{r leverage_and_influence_measures_2, label = "5", fig.align = "center", echo = FALSE, out.height = '180px', out.width = "\\maxwidth", fig.pos = "!h", fig.cap="\\label{fig:5} Leverage vs. Cook's Distance of second model"}
+# Cook's distance for the second model
+D1 <- cooks.distance(M2) # calculate Cook's Distance 
+infl.ind1 <- which.max(D1) # top influence point
+lev.ind1 <- h1 > 2*hbar1 # leverage more than twice average 
+clrs[lev.ind1] <- 'blue' # color for high leverage index
+clrs[infl.ind1] <- 'red' # color for high influence index
+# plot Cook's Distance measure against leverage
+plot(h1, D1, xlab = 'Leverage', ylab = "Cook's Distance Measure", 
+     pch = pch, bg = clrs, cex = cex, cex.axis = cex)
+# limit for high leverage points
+abline(v = 2*hbar1, col = 'grey60', lty=2)
+# specifying high influence and leverage points
+legend("topleft", legend = c("High Leverage", "High Influence"), 
+       pch = pch, pt.bg = c("blue", "red"), cex = cex, pt.cex = cex)
+```
+
+It seems that there are a lot more high leverage points in the second candidate model than the first one that went pass the cutoff. Only two points are above 0.4 in the first model, with the highest leverage being aprroximately 0.5, while the highest leverage in the second model is above 0.8. Thus, the second candidate model is highly influenced by high leverage observations.
+
+Both models have one high influence point that is also a high leverage point. This influential point in the first candidate model went pass the cutoff of 0.4 leverage, while the point in the second candidate model is below this cutoff. Moreover, for the first model, the difference in Cook's distance measure between the high influence point and the point with the second highest Cook's distance is more than 0.25 units of measure, which suggests that this red point is an outlier and might be removed to see a better fit of the model on the data. On the other hand, for the second model, the the difference in Cook's distance measure between the high influence point and the point with the second highest Cook's distance is less than 0.5 units of measure, meaning this point is not too influential on the fit of the model. We will look at these points more in details.
+
+```{r outliers_1, echo=FALSE}
+omit.ind <- c(infl.ind, # most influential
+              which.max(h)) # highest leverage
+# naming the row of most influential and highest leverage points
+names(omit.ind) <- c("infl", "lev") 
+# details of most influential and highest leverage points
+fhs[omit.ind,] 
+```
+
+Looking at the point at row 276 for the high leverage point of the first candidate model, we noticed that this point has total serum cholesterol and low density lipoprotein cholesterol values are too high, with both values are the maximum for each column. The total serum cholesterol and low density lipoprotein cholesterol index also have a linear relationship due to the pair plot and their high VIFs, which is a combination of bad signs for risk of heart disease. Inded, the respective coronary hear disease risk score for this data point is fairly high (the value lies in the third quartile according to the summary statistics), which implies this individual is very vulnerable to heart diseases. 
+
+```{r outliers_2, echo=FALSE}
+omit.ind1 <- c(infl.ind1, # most influential
+              which.max(h1)) # highest leverage
+# naming the row of most influential and highest leverage points
+names(omit.ind1) <- c("infl", "lev")
+# details of most influential and highest leverage points
+fhs[omit.ind1,]
+```
+
+We can also see that both the high influence point and high leverage point of the second candidate model have very high risk score for heart disease. The high influence point in row 1141 has the total serum cholesterol, systolic blood pressure and diastolic blood pressure in the third quartiles of these indexes, and the values for whether this individual has had a myocardial infarction, a stroke or hypertension are all Yes. The individual is also roughly 85.1% vulnerable to heart disease, which is even twice the risk score of the individual at the high leverage point at 44.5%. This individual also has most indexes in the third quartile, with the highest index of casual serum glucose of 478mg/dL and an inflated low density lipoprotein cholesterol of over 100mg/dl. 
+
+The second model detected more outliers than the first model, which means the first model might be more appropriate to fit with the dataset. Lastly, we will perform cross-validation for both models to select the final model to use when studying the factors involved in scoring risk of heart disease.
+
+# Model Selection
+
+## Cross-Validation
+
+We will perform cross-validation with 2000 replications and 1500 observations for training.
+\newpage
+
+```{r cross-validation, include=FALSE}
+require(statmod)
+
+# defining logitnorm_mean function
+logitnorm_mean <- function(mu, sigma){
+  v <- 1/(1+exp(-mu)) 
+  alpha1 <- 1/((sigma^2)*(1-v)) 
+  alpha2 <- 1/(v*(sigma^2))
+  gqp <- gauss.quad.prob(n=10,dist="beta",alpha=alpha1,beta=alpha2)
+  x <- gqp$nodes
+  y <- gqp$weights
+  g <- dnorm((log(x/(1-x))),mean=mu,sd=sigma,log = TRUE) - log(1-x) - 
+    dbeta(x, shape1=alpha1,shape2 = alpha2, log = TRUE)
+  sum(y*(exp(g)))
+}
+
+
+# compare Mstep to M2
+M10 <- Mstep
+M20 <- M2
+Mnames <- expression(M[STEP], M[MLM])
+
+# number of cross-validation replications
+nreps <- 2e3 # number of replications
+ntot <- nrow(fhs) # total number of observations
+ntrain <- 1500 # for fitting MLE's
+ntest <- ntot-ntrain # for out-of-sample prediction
+
+# storage space
+mspe1 <- rep(NA, nreps) # mean-squared prediction errors for M10
+mspe2 <- rep(NA, nreps) # mean-squared prediction errors for M20
+lambda1 <- rep(NA, nreps) # out-of-sample log-likelihood for M1
+lambda2 <- rep(NA, nreps) # out-of-sample log-likelihood for M2
+
+# cross-validation
+system.time({
+  for(ii in 1:nreps) {
+    if(ii%%100 == 0) message("ii = ", ii)
+    train.ind <- sample(ntot, ntrain) # training observations
+    
+    # fit the models on the subset of training data
+    M10.cv <- update(M10, subset = train.ind)
+    M20.cv <- update(M20, subset = train.ind)
+    
+    # out-of-sample log-likelihoods
+    M10.sigma <- sqrt(sum(resid(M10.cv)^2)/ntrain) # MLE of sigma
+    M20.sigma <- sqrt(sum(resid(M20.cv)^2)/ntrain)
+    
+    # mean for calculating out-of-sample residuals
+    mu_1 <- predict(M10.cv, newdata = fhs[-train.ind,])
+    mu_2 <- predict(M20.cv, newdata = fhs[-train.ind,])
+
+    # out-of-sample residuals
+    M10.res <- fhs$chdrisk[-train.ind] - 
+      sapply(1:ntest, function(ii) logitnorm_mean(mu_1[ii],M10.sigma))
+    M20.res <- fhs$chdrisk[-train.ind] - 
+      sapply(1:ntest, function(ii) logitnorm_mean(mu_2[ii],M20.sigma))
+    
+    # mean-square prediction errors for each model
+    mspe1[ii] <- mean(M10.res^2)
+    mspe2[ii] <- mean(M20.res^2)
+    
+    # since res = y - pred, dnorm(y, pred, sd) = dnorm(res, 0, sd)
+    lambda1[ii] <- sum(dnorm(M10.res, sd = M10.sigma, log = TRUE))
+    lambda2[ii] <- sum(dnorm(M20.res, sd = M20.sigma, log = TRUE))
+  }
+})
+```
+
+
+```{r cross-validation_plots, label = "6", fig.align = "center", echo = FALSE, out.height = '200px', out.width = "\\maxwidth", fig.pos = "!h", fig.cap="\\label{fig:6} Cross-Validation Boxplot and Histogram"}
+
+par(mfrow = c(1,2), mar = c(5.1, 5.1, 3, 1.1)*0.6) # plot frame
+cex <- .8 # size of data points
+# boxplot
+boxplot(x = list(sqrt(mspe1), sqrt(mspe2)), names = Mnames,
+        main = "rMSPE",
+        ylab = "rMSPE",
+        col = c("yellow", "orange"),
+        cex = cex, cex.lab = cex, cex.axis = cex, cex.main = cex)
+
+# out-of-sample log likelihood ratio statistics
+lambda <- lambda1 - lambda2
+# histogram of out-of-sample log likelihood ratio statistics
+hist(log(lambda), breaks = 50, freq = FALSE,
+     main = "Log-Likelihood Ratio Statistic",
+     ylab = "Density",
+     xlab = "log-likelihood ratio test",
+     cex = cex, cex.lab = cex, cex.axis = cex, cex.main = cex)
+abline(v = mean(log(lambda)), col = "red", lwd = 2) # mean of lambda
+```
+
+There is a difference between the models. The boxplot and the histogram using shows that the out-of-sample log-likelihood ratio statistics is very positive, leaning towards the first candidate model for fitting given data. 
+
+Therefore, we will pick the the former model, which is the Stepwise model selected through Automated Model Selection. 
+
+# Final Model
+
+```{r final model, echo=FALSE}
+summary(Mstep)
+```
+
+# Discussions
+
+1. Thus, through the model diagnostics, we recognized that high level of total serum cholesterol, low density lipoprotein cholesterol, blood pressure, and glucose together with previous heart-related diseases are associated with high risk score for heart disease. Individuals with low risk of getting heart diseases usually have a high level of high density lipoproterin cholesterol, with few to no history of having any special heart-related medical conditions.
+
+2. Some behavioral changes to lower the risk for heart disease are: cutting back on fat and sugar consumption, increase exercises and have more meals with high density lipoprotein like beef
+
+3. There are some covariates with high p-values are still retained in the final model, namely the total serum cholesterol, the systolic and diastolic blood pressure, low density lipoprotein cholesterol and some categorical covariates. These factors are important in determining the heart disease risk score, however we can only see this relationship clearly through outliers and thus are not deemed significant in the model. The model also has too many explanatory variables to begin with, so after automating the model selection process, that's why the final model still has so many covariates with high p-values.
+
+4. Some outlying observations might be removed from the dataset as considered in the model diagnostics are the high influence point in row 276, 892 and 1141. These observations are too extreme and might affect the study of the correlation between heart disease risk and their explanatory factors. Nonetheless, it helps us in understanding many factors, especially high p-value factors, contribute the different levels of CHD risk score.
+
+5. The final model might be overfitting the data, since the sample size for training during the cross-validation step is too high compared to the total number of replications it used. Even though the second model might be preferred in terms of predictive power, the cross-validation process still favor the first model more. The dataset contains too many covariates to begin with, so it is natural that the automated model detects many relations between explanatory variables.
+
+# Appendix
+
+```{r source_external, include = FALSE}
+knitr::read_chunk("external_code.R")
+```
+
+## R Code used to generate plots
+
+### R code for figure \ref{fig:1}
+```{r first-figure, eval=FALSE}
+```
+
+### R code for figure \ref{fig:2}
+```{r second-figure, eval=FALSE}
+```
+
+### R code for figure \ref{fig:3}
+```{r third-figure, eval=FALSE}
+```
+
+### R code for figure \ref{fig:4}
+```{r fourth-figure, eval=FALSE}
+```
+
+### R code for figure \ref{fig:5}
+```{r fifth-figure, eval=FALSE}
+```
+
+### R code for figure \ref{fig:6}
+```{r sixth-figure, eval=FALSE}
+```
+
+## R Code used to generate statistics 
+```{r Others, eval=FALSE}
+```
